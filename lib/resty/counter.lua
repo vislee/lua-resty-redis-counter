@@ -96,7 +96,7 @@ function _M.set_get_redis(self, get_redis)
 end
 
 
-function _M.flush(self)
+function _M.close(self)
     self.wcount = 0
     self.cache:flush_all()
     global[self.name] = nil
