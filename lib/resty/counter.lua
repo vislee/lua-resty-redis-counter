@@ -6,39 +6,40 @@ local redis = require "resty.redis"
 local ceil = math.ceil
 local floor = math.floor
 local str_fmt = string.format
+local ngx_crc32 = ngx.crc32_long
 
 local _M = {}
 local mt = { __index = _M }
 
-local globle_cache = {}
+local global = {}
 local anchor_ts = 1530460800
 
-local _get_redis_conn = function(opts)
-    if opts == nil or type(opts) ~= "table" then
-        return nil, "wrong opts"
+local _get_redis_conn = function(opt)
+    if opt == nil or type(opt) ~= "table" then
+        return nil, "wrong opt"
     end
 
-    if opts.host == nil then
-        return nil, "opts.host is nil"
+    if opt.host == nil then
+        return nil, "opt.host is nil"
     end
 
     local red = redis:new()
-    red:set_timeout(opts.timeout or 1000)
-    local ok, err = red:connect(opts.host, (opts.port or 6379))
+    red:set_timeout(opt.timeout or 1000)
+    local ok, err = red:connect(opt.host, (opt.port or 6379))
     if not ok then
-        ngx.log(ngx.WARN, "failed to connect ", opts.host, ":", (opts.port or 6379), ". ", err)
+        ngx.log(ngx.WARN, "failed to connect ", opt.host, ":", (opt.port or 6379), ". ", err)
         return nil, err
     end
 
-    if opts.passwd and #opts.passwd > 0 then
-        local res, err = red:auth(opts.passwd)
+    if opt.passwd and #opt.passwd > 0 then
+        local res, err = red:auth(opt.passwd)
         if not res then
             return nil, err
         end
     end
 
-    if opts.db and opts.db > 0 then
-        red:select(opts.db)
+    if opt.db and opt.db > 0 then
+        red:select(opt.db)
     end
 
     return red, function()
@@ -49,42 +50,56 @@ local _get_redis_conn = function(opts)
         end
     end
 end
+_M.get_redis_conn = _get_redis_conn
 
 
-function _M.new(name, wind, number, opts)
+local _get_hash_redis = function(opts)
+    return function(key)
+        local idx = ngx_crc32(key) % #opts + 1
+        return _get_redis_conn(opts[idx])
+    end
+end
+_M.get_hash_redis = _get_hash_redis
+
+
+function _M.new(name, wind, number, get_redis)
+    local obj = global[name]
+    if obj and obj.wind == wind and obj.wnum == number then
+        return obj
+    elseif obj then
+        return nil, "wrong wind or number"
+    end
+
     local cache
     if name and ngx.shared[name] then
         cache = ngx.shared[name]
-    elseif globle_cache[name] ~= nil then
-        cache = globle_cache[name]
     else
-        cache = lrucache.new(2048)
-        globle_cache[name] = cache
+        cache = lrucache.new(1024)
     end
 
-    local t = {
+    obj = setmetatable({
         name = name,
         wcount = 0,
         cache = cache,
         wind = wind,
         wnum = number,
-        opts = opts,
-        get_redis_conn = _get_redis_conn,
-    }
+        get_redis_conn = get_redis,
+    }, mt)
+    global[name] = obj
 
-    return setmetatable(t, mt)
+    return obj
+end
+
+
+function _M.set_get_redis(self, get_redis)
+    self.get_redis_conn = get_redis
 end
 
 
 function _M.flush(self)
     self.wcount = 0
     self.cache:flush_all()
-    globle_cache[name] = nil
-end
-
-
-function _M.set_get_redis_conn(self, func)
-    self.get_redis_conn = func
+    global[self.name] = nil
 end
 
 
@@ -111,7 +126,7 @@ function _M.incr(self, key, val)
 
     -- incrby into redis
     if incr_pre_val > 0 then
-        local redis, release = self.get_redis_conn(self.opts)
+        local redis, release = self.get_redis_conn(key)
         if redis then
             local val = redis:incrby(incr_pre_key, incr_pre_val)
             ngx.log(ngx.DEBUG, "redis:incrby key:", incr_pre_key, " val:", incr_pre_val, " return: ", val)
@@ -156,7 +171,7 @@ function _M.get(self, key)
         return count + self.wcount
     end
 
-    local redis, release = self.get_redis_conn(self.opts)
+    local redis, release = self.get_redis_conn(key)
     if not redis then
         return 0, release
     end

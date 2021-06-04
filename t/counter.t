@@ -20,9 +20,10 @@ __DATA__
 --- config
     location /count/ {
         content_by_lua_block {
-            local counter = require "resty.counter".new("test", 2, 2, {host="127.0.0.1"})
-            counter:incr(ngx.var.uri)
-            ngx.print(counter:get(ngx.var.uri))
+            local counter = require "resty.counter"
+            local c = counter.new("test", 2, 3, counter.get_hash_redis{{host="127.0.0.1"}})
+            c:incr(ngx.var.uri)
+            ngx.print(c:get(ngx.var.uri))
             ngx.exit(ngx.HTTP_OK)
         }
     }
