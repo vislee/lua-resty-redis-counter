@@ -6,6 +6,7 @@ local redis = require "resty.redis"
 local ceil = math.ceil
 local floor = math.floor
 local str_fmt = string.format
+local ngx_now = ngx.now
 local ngx_crc32 = ngx.crc32_long
 
 local _M = {}
@@ -23,12 +24,34 @@ local _get_redis_conn = function(opt)
         return nil, "opt.host is nil"
     end
 
+    if opt.max_fails and opt.fail_timeout and not (opt.accessed and opt.checked and opt.fails) then
+        opt.accessed = 0
+        opt.checked = 0
+        opt.fails = 0
+    end
+
+    local now = ngx_now()
+    if opt.max_fails and opt.fail_timeout and opt.fails >= opt.max_fails and now - opt.checked <= opt.fail_timeout then
+        return nil, "failed health check"
+    end
+
     local red = redis:new()
-    red:set_timeout(opt.timeout or 1000)
+    red:set_timeouts(opt.connect_timeout or 1000, opt.send_timeout or 1000, opt.read_timeout or 1000)
     local ok, err = red:connect(opt.host, (opt.port or 6379))
     if not ok then
         ngx.log(ngx.WARN, "failed to connect ", opt.host, ":", (opt.port or 6379), ". ", err)
+
+        if opt.max_fails and opt.fail_timeout then
+            opt.fails = opt.fails + 1
+            opt.accessed = now
+            opt.checked = now
+        end
+
         return nil, err
+    end
+
+    if opt.max_fails and opt.fail_timeout and now - opt.checked > opt.fail_timeout then
+        opt.checked = now
     end
 
     if opt.passwd and #opt.passwd > 0 then
@@ -42,27 +65,47 @@ local _get_redis_conn = function(opt)
         red:select(opt.db)
     end
 
-    return red, function()
+    if opt.max_fails and opt.fail_timeout and opt.accessed < opt.checked then
+        opt.fails = 0
+    end
+
+    return red,
+    function(failed)
+        if failed then
+            if opt.max_fails and opt.fail_timeout then
+                local now = ngx_now()
+                opt.fails = opt.fails + 1
+                opt.accessed = now
+                opt.checked = now
+            end
+            red:close()
+            return
+        end
+
+        if opt.max_fails and opt.fail_timeout and opt.accessed < opt.checked then
+            opt.fails = 0
+        end
+
         local ok, err = red:set_keepalive(10000, 32)
         if not ok then
             ngx.log(ngx.WARN, "failed to set keepalive: ", err)
             red:close()
         end
-    end
+    end,
+    opt
 end
 _M.get_redis_conn = _get_redis_conn
 
 
-local _get_hash_redis = function(opts)
+local _get_hash_redis_conn = function(opts)
     return function(key)
         local idx = ngx_crc32(key) % #opts + 1
         return _get_redis_conn(opts[idx])
     end
 end
-_M.get_hash_redis = _get_hash_redis
 
 
-function _M.new(name, wind, number, get_redis)
+function _M.new(name, wind, number, opts)
     local obj = global[name]
     if obj and obj.wind == wind and obj.wnum == number then
         return obj
@@ -82,8 +125,10 @@ function _M.new(name, wind, number, get_redis)
         wcount = 0,
         cache = cache,
         wind = wind,
+        midx = floor(86400/wind),
         wnum = number,
-        get_redis_conn = get_redis,
+        redis_opts = opts,
+        get_redis_connect_handler = _get_hash_redis_conn(opts),
     }, mt)
     global[name] = obj
 
@@ -91,8 +136,8 @@ function _M.new(name, wind, number, get_redis)
 end
 
 
-function _M.set_get_redis(self, get_redis)
-    self.get_redis_conn = get_redis
+function _M.set_get_redis_connect_handler(self, get_redis_connect)
+    self.get_redis_connect_handler = get_redis_connect(self.opts)
 end
 
 
@@ -103,7 +148,7 @@ function _M.close(self)
 end
 
 
-function _M.incr(self, key, val)
+function _M.incr(self, key, value)
     local day_sec = ceil((ngx.now() - anchor_ts) % 86400)
     local day_sec_index = floor(day_sec/self.wind)
 
@@ -117,7 +162,7 @@ function _M.incr(self, key, val)
     if incr_val == 0 then
         local day_sec_pre_index = day_sec_index - 1
         if day_sec_pre_index < 0 then
-            day_sec_pre_index = floor(86400/self.wind)
+            day_sec_pre_index = self.midx
         end
         incr_pre_key = key .. str_fmt("_%05d", day_sec_pre_index)
         incr_pre_val = self.cache:get(incr_pre_key) or 0
@@ -126,23 +171,28 @@ function _M.incr(self, key, val)
 
     -- incrby into redis
     if incr_pre_val > 0 then
-        local redis, release = self.get_redis_conn(key)
+        local redis, release = self.get_redis_connect_handler(key)
         if redis then
-            local val = redis:incrby(incr_pre_key, incr_pre_val)
-            ngx.log(ngx.DEBUG, "redis:incrby key:", incr_pre_key, " val:", incr_pre_val, " return: ", val)
-            local expire = self.wind * self.wnum + 3
-            if incr_pre_val == val then
-                redis:expire(incr_pre_key, expire)
-                ngx.log(ngx.DEBUG, "expire key:", incr_pre_key, " ttl:", expire)
+            local val, err = redis:incrby(incr_pre_key, incr_pre_val)
+            if not val then
+                ngx.log(ngx.WARN, "redis:incrby key: ", incr_pre_key, " val:", incr_pre_val, " error: ", err)
+                release(true)
+            else
+                ngx.log(ngx.DEBUG, "redis:incrby key:", incr_pre_key, " val:", incr_pre_val, " return: ", val)
+                local expire = self.wind * self.wnum + 3
+                if incr_pre_val == val then
+                    redis:expire(incr_pre_key, expire)
+                    ngx.log(ngx.DEBUG, "expire key:", incr_pre_key, " ttl:", expire)
+                end
+                incr_pre_val = 0
+                release()
             end
-            incr_pre_val = 0
-            release()
         end
     end
 
-    self.wcount = incr_pre_val + incr_val + (val or 1)
+    self.wcount = incr_pre_val + incr_val + (value or 1)
     self.cache:set(incr_key, self.wcount, 2*self.wind+1)
-    ngx.log(ngx.DEBUG, "cache:set key:", incr_key, " val:", self.wcount)
+    ngx.log(ngx.DEBUG, "cache:set key:", incr_key, " value:", self.wcount)
 end
 
 
@@ -155,7 +205,7 @@ local get_count_keys = function(self, key)
         t[i] = key .. str_fmt("_%05d", day_sec_index)
         day_sec_index = day_sec_index - 1
         if day_sec_index < 0 then
-            day_sec_index = floor(86400/self.wind)
+            day_sec_index = self.midx
         end
     end
 
@@ -171,15 +221,16 @@ function _M.get(self, key)
         return count + self.wcount
     end
 
-    local redis, release = self.get_redis_conn(key)
+    local redis, release = self.get_redis_connect_handler(key)
     if not redis then
-        return 0, release
+        return self.wcount, release
     end
 
     local ks = get_count_keys(self, key)
     local res, err = redis:mget(unpack(ks))
     if not res then
-        return 0, err
+        release(true)
+        return self.wcount, err
     end
 
     count = 0
