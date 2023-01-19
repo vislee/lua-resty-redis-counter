@@ -6,6 +6,7 @@ local redis = require "resty.redis"
 local ceil = math.ceil
 local floor = math.floor
 local str_fmt = string.format
+local tab_concat = table.concat
 local ngx_now = ngx.now
 local ngx_crc32 = ngx.crc32_long
 
@@ -128,7 +129,7 @@ function _M.new(name, wind, number, opts)
         midx = floor(86400/wind),
         wnum = number,
         redis_opts = opts,
-        get_redis_connect_handler = _get_hash_redis_conn(opts),
+        get_redis_conn_handler = _get_hash_redis_conn(opts),
     }, mt)
     global[name] = obj
 
@@ -136,8 +137,8 @@ function _M.new(name, wind, number, opts)
 end
 
 
-function _M.set_get_redis_connect_handler(self, get_redis_connect)
-    self.get_redis_connect_handler = get_redis_connect(self.opts)
+function _M.set_get_redis_conn_handler(self, get_x_redis_conn)
+    self.get_redis_conn_handler = get_x_redis_conn(self.opts)
 end
 
 
@@ -152,7 +153,7 @@ function _M.incr(self, key, value)
     local day_sec = ceil((ngx.now() - anchor_ts) % 86400)
     local day_sec_index = floor(day_sec/self.wind)
 
-    local incr_key = key .. str_fmt("_%05d", day_sec_index)
+    local incr_key = tab_concat({self.name, key, str_fmt("%05d", day_sec_index)}, '_')
     local incr_val = self.cache:get(incr_key) or 0
     ngx.log(ngx.DEBUG, "incr_key: ", incr_key, " incr_val: ", incr_val)
 
@@ -164,14 +165,14 @@ function _M.incr(self, key, value)
         if day_sec_pre_index < 0 then
             day_sec_pre_index = self.midx
         end
-        incr_pre_key = key .. str_fmt("_%05d", day_sec_pre_index)
+        incr_pre_key = tab_concat({self.name, key, str_fmt("%05d", day_sec_pre_index)}, '_')
         incr_pre_val = self.cache:get(incr_pre_key) or 0
         ngx.log(ngx.DEBUG, "incr_pre_key: ", incr_pre_key, " incr_pre_val: ", incr_pre_val)
     end
 
     -- incrby into redis
     if incr_pre_val > 0 then
-        local redis, release = self.get_redis_connect_handler(key)
+        local redis, release = self.get_redis_conn_handler(tab_concat({self.name, key}, '_'))
         if redis then
             local val, err = redis:incrby(incr_pre_key, incr_pre_val)
             if not val then
@@ -214,19 +215,20 @@ end
 
 
 function _M.get(self, key)
-    local count = self.cache:get(key)
-    ngx.log(ngx.DEBUG, "get cached key:", key, " val:", (count or ""))
+    local k = tab_concat({self.name, key}, "_")
+    local count = self.cache:get(k)
+    ngx.log(ngx.DEBUG, "get cached key:", k, " val:", (count or ""))
 
     if count then
         return count + self.wcount
     end
 
-    local redis, release = self.get_redis_connect_handler(key)
+    local redis, release = self.get_redis_conn_handler(k)
     if not redis then
         return self.wcount, release
     end
 
-    local ks = get_count_keys(self, key)
+    local ks = get_count_keys(self, k)
     local res, err = redis:mget(unpack(ks))
     if not res then
         release(true)
@@ -238,7 +240,7 @@ function _M.get(self, key)
         count = count + (tonumber(v) or 0)
     end
 
-    self.cache:set(key, count, self.wind)
+    self.cache:set(k, count, self.wind)
     return count + self.wcount
 end
 
