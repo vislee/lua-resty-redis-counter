@@ -86,11 +86,11 @@ The optional `opt` argument is a Lua table holding the following keys:
 
 new
 ---
-`syntax: ct = counter.new(name, wind, c, opts)`
+`syntax: ct = counter.new(name, wind, number, opts)`
 
 Creates a counter object.
 `name` is counter object names.
-`wind` is sliding-window size. `number` is sliding-window number. So, the statistical duration is `wind` * `wind`.
+`wind` is sliding-window size. `number` is sliding-window number. So, the statistical duration is `wind` * `number`.
 `opts` is array of redis cluster opt.
 
 
@@ -118,6 +118,7 @@ Gets the count of `key`.
 
 close
 -----
+`syntax: ct:close()`
 
 Closes the counter object.
 
