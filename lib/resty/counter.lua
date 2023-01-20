@@ -16,7 +16,7 @@ local mt = { __index = _M }
 local global = {}
 local anchor_ts = 1530460800
 
-local redis_counter_incrby_script = [==[
+local redis_counter_incrbyex_script = [==[
 local key = KEYS[1]
 local val, ttl = tonumber(ARGV[1]), tonumber(ARGV[2])
 
@@ -34,9 +34,9 @@ return res
 ]==]
 
 
-local redis_counter_incrby = function(red, sha, key, val, ttl)
+local redis_counter_incrbyex = function(red, sha, key, val, ttl)
     if not sha then
-        local res, err = red:script("LOAD", redis_counter_incrby_script)
+        local res, err = red:script("LOAD", redis_counter_incrbyex_script)
         if not res then
             return nil, err
         end
@@ -211,16 +211,16 @@ function _M.incr(self, key, value)
         local redis, release, opt = self.get_redis_conn_handler(tab_concat({self.name, key}, '_'))
         if redis then
             local ttl = self.wind * self.wnum + 3
-            local res, err = redis_counter_incrby(redis, opt.incrby_script_sha, incr_pre_key, incr_pre_val, ttl)
+            local res, err = redis_counter_incrbyex(redis, opt.incrby_script_sha, incr_pre_key, incr_pre_val, ttl)
             if not res then
                 opt.incrby_script_sha = nil
                 release(true)
                 ngx.log(ngx.WARN, "redis:script:incrby key:", incr_pre_key, " val:", incr_pre_val, " ttl:", ttl, " error:", err)
             else
                 opt.incrby_script_sha = res
-                incr_pre_val = 0
                 release()
                 ngx.log(ngx.DEBUG, "redis:script:incrby key:", incr_pre_key, " val:", incr_pre_val, " ttl:", ttl)
+                incr_pre_val = 0
             end
         end
     end
