@@ -18,6 +18,10 @@ __DATA__
     # lua_shared_dict test 10m;
     variables_hash_bucket_size 128;
 
+    init_by_lua_block {
+        require 'luacov.tick'
+        jit.off()
+    }
 
 --- config
     location /count/ {
@@ -55,11 +59,67 @@ GET /t
 
 
 
-=== TEST 2: health check
+=== TEST 2: sliding-window count
 --- http_config
     lua_package_path 'lib/?.lua;;';
     # lua_shared_dict test 10m;
     variables_hash_bucket_size 128;
+
+    init_by_lua_block {
+        require 'luacov.tick'
+        jit.off()
+    }
+
+--- config
+    location /count/ {
+        content_by_lua_block {
+            local counter = require "resty.counter"
+            local c = counter.new("test", 2, 3, {{host="127.0.0.1"}})
+            c:incr(ngx.var.uri)
+            ngx.print(c:get(ngx.var.uri))
+            ngx.exit(ngx.HTTP_OK)
+        }
+    }
+    location /t {
+        access_by_lua_block {
+            ngx.location.capture("/count/window")
+            ngx.location.capture("/count/window")
+            ngx.sleep(2)
+            ngx.location.capture("/count/window")
+
+            ngx.sleep(8)
+            ngx.location.capture("/count/window")
+            ngx.location.capture("/count/window")
+            ngx.location.capture("/count/window")
+            ngx.sleep(2)
+
+            local res = ngx.location.capture("/count/window")
+
+            ngx.print(res.body)
+            ngx.exit(200)
+        }
+    }
+
+--- request
+GET /t
+--- response_body: 4
+--- timeout: 30s
+--- error_code: 200
+--- no_error_log
+[error]
+
+
+
+=== TEST 3: health check
+--- http_config
+    lua_package_path 'lib/?.lua;;';
+    # lua_shared_dict test 10m;
+    variables_hash_bucket_size 128;
+
+    init_by_lua_block {
+        require 'luacov.tick'
+        jit.off()
+    }
 
 --- config
     location /count/ {
