@@ -203,6 +203,9 @@ function _M.incr(self, key, value)
         end
         incr_pre_key = tab_concat({self.name, key, str_fmt("%05d", day_sec_pre_index)}, '_')
         incr_pre_val = self.cache:get(incr_pre_key) or 0
+        if incr_pre_val > 0 then
+            self.cache:delete(incr_pre_key)
+        end
         ngx.log(ngx.DEBUG, "cache:get incr_pre_key:", incr_pre_key, " incr_pre_val:", incr_pre_val)
     end
 
