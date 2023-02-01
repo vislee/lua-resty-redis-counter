@@ -271,6 +271,7 @@ function _M.get(self, key)
         release(true)
         return self.wcount, err
     end
+    release()
 
     count = 0
     for _, v in ipairs(res) do
