@@ -104,7 +104,7 @@ Sets the callback function to get the redis connection. defaults is `get_hash_re
 
 incr
 ----
-`syntax: ct:incr(key, value)`
+`syntax: ct:incr(key, value?)`
 
 The counts incr in `key`.
 
