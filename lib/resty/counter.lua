@@ -1,7 +1,7 @@
 -- Copyright (C) vislee
 
 local redis = require "resty.redis"
-local cached = require "resty.cached"
+local cache = require "resty.cached".new()
 
 local ceil = math.ceil
 local floor = math.floor
@@ -153,7 +153,7 @@ function _M.new(name, wind, number, opts)
     obj = setmetatable({
         name = name,
         wcount = {},
-        cache = cached.new(),
+        cache = cache,
         wind = wind,
         midx = floor(86400/wind),
         wnum = number,
@@ -173,7 +173,7 @@ end
 
 function _M.close(self)
     self.wcount = nil
-    self.cache:flush_all()
+    -- self.cache:flush_all()
     global[self.name] = nil
 end
 
@@ -209,7 +209,7 @@ function _M.incr(self, key, value)
             if not res then
                 opt.incrby_script_sha = nil
                 release(true)
-                -- self.cache:incr(incr_key, incr_pre_val/3)
+                -- self.cache:incr(incr_key, ceil(incr_pre_val/3))
                 ngx.log(ngx.WARN, "redis:script:incrby key:", incr_pre_key, " val:", incr_pre_val, " ttl:", ttl, " error:", err)
             else
                 opt.incrby_script_sha = res
