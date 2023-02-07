@@ -6,9 +6,9 @@ Table of Contents
 
 * [Synopsis](#synopsis)
 * [Methods](#methods)
-    * [get_redis_conn](#get_redis_conn)
+    * [redis_conn](#redis_conn)
     * [new](#new)
-    * [set_get_redis_conn_handler](#set_get_redis_conn_handler)
+    * [set_redis_conn_handler](#set_redis_conn_handler)
     * [incr](#incr)
     * [get](#get)
     * [close](#close)
@@ -38,9 +38,9 @@ Methods
 =======
 
 
-get_redis_conn
---------------
-`syntax: redis, release = counter.get_redis_conn(opt)`
+redis_conn
+----------
+`syntax: redis, release = counter.redis_conn(opt)`
 
 Get a connected redis object and `release` handler.
 In case of failures, returns `nil` and a string describing the error.
@@ -94,9 +94,9 @@ Creates a counter object.
 `opts` is array of redis cluster opt.
 
 
-set_get_redis_conn_handler
---------------------------
-`syntax: ct:set_get_redis_conn_handler(get_x_redis_conn)`
+set_redis_conn_handler
+-----------------------
+`syntax: ct:set_redis_conn_handler(get_x_redis_conn)`
 
 
 Sets the callback function to get the redis connection. defaults is `get_hash_redis_conn`.
