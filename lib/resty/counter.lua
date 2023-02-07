@@ -1,7 +1,7 @@
 -- Copyright (C) vislee
 
 local redis = require "resty.redis"
-local cache = require "resty.cached".new()
+local lrucache = require "resty.lrucache"
 
 local ceil = math.ceil
 local floor = math.floor
@@ -10,10 +10,10 @@ local tab_concat = table.concat
 local ngx_now = ngx.now
 local ngx_crc32 = ngx.crc32_long
 
-local _M = {}
+local _M = {cache = require "resty.cached" .new()}
 local mt = { __index = _M }
 
-local global = {}
+local global = lrucache.new(32)
 local anchor_ts = 1530460800
 
 local redis_counter_incrbyex_script = [==[
@@ -52,7 +52,7 @@ local redis_counter_incrbyex = function(red, sha, key, val, ttl)
 end
 
 
-local _get_redis_conn = function(opt)
+local _redis_conn = function(opt)
     if opt == nil or type(opt) ~= "table" then
         return nil, "wrong opt"
     end
@@ -131,19 +131,22 @@ local _get_redis_conn = function(opt)
     end,
     opt
 end
-_M.get_redis_conn = _get_redis_conn
+_M.redis_conn = _redis_conn
 
 
 local _get_hash_redis_conn = function(opts)
     return function(key)
         local idx = ngx_crc32(key) % #opts + 1
-        return _get_redis_conn(opts[idx])
+        return _redis_conn(opts[idx])
     end
 end
 
 
 function _M.new(name, wind, number, opts)
-    local obj = global[name]
+    local obj, stale_obj = global:get(name)
+    if obj == nil and stale_obj then
+        obj = stale_obj
+    end
     if obj and obj.wind == wind and obj.wnum == number then
         return obj
     elseif obj then
@@ -153,28 +156,26 @@ function _M.new(name, wind, number, opts)
     obj = setmetatable({
         name = name,
         wcount = {},
-        cache = cache,
         wind = wind,
         midx = floor(86400/wind),
         wnum = number,
         redis_opts = opts,
-        get_redis_conn_handler = _get_hash_redis_conn(opts),
+        redis_conn_handler = _get_hash_redis_conn(opts),
     }, mt)
-    global[name] = obj
+    global:set(name, obj, 3600)
 
     return obj
 end
 
 
-function _M.set_get_redis_conn_handler(self, get_x_redis_conn)
-    self.get_redis_conn_handler = get_x_redis_conn(self.opts)
+function _M.set_redis_conn_handler(self, get_x_redis_conn)
+    self.redis_conn_handler = get_x_redis_conn(self.redis_opts)
 end
 
 
 function _M.close(self)
+    global:delete(self.name)
     self.wcount = nil
-    -- self.cache:flush_all()
-    global[self.name] = nil
 end
 
 
@@ -202,7 +203,7 @@ function _M.incr(self, key, value)
 
     -- incrby into redis
     if incr_pre_val > 0 then
-        local redis, release, opt = self.get_redis_conn_handler(key)
+        local redis, release, opt = self.redis_conn_handler(key)
         if redis then
             local ttl = self.wind * self.wnum + 3
             local res, err = redis_counter_incrbyex(redis, opt.incrby_script_sha, incr_pre_key, incr_pre_val, ttl)
@@ -249,7 +250,7 @@ function _M.get(self, key)
         return count + (self.wcount[key] or 0)
     end
 
-    local redis, release = self.get_redis_conn_handler(key)
+    local redis, release = self.redis_conn_handler(key)
     if not redis then
         return (self.wcount[key] or 0), release
     end
